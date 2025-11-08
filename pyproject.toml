@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "funding-data-fetch"
+version = "0.1.0"
+description = "Utilities for downloading, caching, and reading exchange funding/OHLCV datasets."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "din li" }]
+dependencies = [
+    "pandas>=2.0",
+    "requests>=2.31",
+    "backports.zoneinfo; python_version < '3.9'",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+]
+
+# [tool.setuptools]
+# # packages = [
+# #     "fundingDataFetchPackage",
+# #     "fundingDataFetchPackage.dataFetcher",
+# #     "fundingDataFetchPackage.dataFetcher.exchange",
+# # ]
+# packages = [
+#     ".",
+#     "dataFetcher",
+#     "dataFetcher.exchange",
+# ]
+# include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fundingDataFetchPackage*"]
