@@ -204,6 +204,24 @@ class OKXAdapter(ExchangeAdapter):
         )
         return self._parse_funding_history(raw)
 
+    def fetch_latest_index_price(self, symbol: str) -> tuple[int, float]:
+        endpoint = "/api/v5/market/index-tickers"
+        params = {"instId": self._map_index_symbol(symbol)}
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+        )
+        data = raw.get("data", []) if isinstance(raw, dict) else []
+        if not data:
+            raise ValueError(f"Unable to fetch OKX index price for {symbol}")
+        idx_px = data[0].get("idxPx")
+        if idx_px is None:
+            raise ValueError(f"OKX response missing idxPx for {symbol}")
+        ts = data[0].get("ts")
+        if ts is None:
+            raise ValueError("OKX response missing timestamp")
+        return int(ts), float(idx_px)
+
     def _apply_time_filters(
         self,
         params: Dict[str, Any],

@@ -1,3 +1,4 @@
+import time
 from typing import List, Dict, Any
 
 if __name__ == "__main__":
@@ -211,6 +212,28 @@ class BybitAdapter(ExchangeAdapter):
                 funding_rate = float(item[1])
             records.append((funding_time, funding_rate))
         return list(reversed(records))
+
+    def fetch_latest_index_price(self, symbol: str) -> tuple[int, float]:
+        endpoint = "/v5/market/tickers"
+        params = {
+            "category": self.default_category,
+            "symbol": self._map_symbol(symbol),
+        }
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+        )
+        self._ensure_success(raw)
+        result = raw.get("result", {}) if isinstance(raw, dict) else {}
+        tickers = result.get("list", []) or []
+        if not tickers:
+            raise ValueError(f"Bybit returned empty ticker set for {symbol}")
+        index_price = tickers[0].get("indexPrice")
+        if index_price is None:
+            raise ValueError(f"Bybit response missing indexPrice for {symbol}")
+        ts = tickers[0].get("updatedTime") or raw.get("time")
+        timestamp_ms = int(ts) if ts is not None else int(time.time() * 1000)
+        return timestamp_ms, float(index_price)
 
     def _map_symbol(self, internal_symbol: str) -> str:
         # "BTC_USDT" -> "BTCUSDT"

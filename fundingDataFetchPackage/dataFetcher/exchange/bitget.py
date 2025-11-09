@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import time
 
 if __name__ == "__main__":
@@ -225,6 +225,31 @@ class BitgetAdapter(ExchangeAdapter):
         # API returns newest first; reverse for chronological order
         records.sort(key=lambda x: x[0])
         return records
+
+    def fetch_latest_index_price(self, symbol: str) -> Tuple[int, float]:
+        endpoint = "/api/mix/v1/market/ticker"
+        params = {"symbol": self._map_symbol(symbol)}
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+            timeout=10.0,
+        )
+        if not isinstance(raw, dict):
+            raise ValueError("Unexpected Bitget ticker response format")
+        if raw.get("code") != "00000":
+            msg = raw.get("msg", "Unknown Bitget API error")
+            raise RuntimeError(f"Bitget API error {raw.get('code')}: {msg}")
+        data = raw.get("data")
+        record: Optional[Dict[str, Any]]
+        if isinstance(data, list):
+            record = data[0] if data else None
+        else:
+            record = data
+        if not record or "indexPrice" not in record:
+            raise ValueError(f"Bitget response missing indexPrice for {symbol}")
+        ts = record.get("timestamp") or raw.get("requestTime")
+        timestamp_ms = int(ts) if ts is not None else int(time.time() * 1000)
+        return timestamp_ms, float(record["indexPrice"])
 
     def _compute_time_window(
         self,

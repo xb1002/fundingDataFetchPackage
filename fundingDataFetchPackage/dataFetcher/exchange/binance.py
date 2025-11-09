@@ -1,4 +1,5 @@
 # exchanges/binance.py
+import time
 from typing import List, Dict, Any
 if __name__ == "__main__":
     import sys
@@ -175,6 +176,22 @@ class BinanceAdapter(ExchangeAdapter):
             )
             candles.append(candle)
         return candles
+
+    def fetch_latest_index_price(self, symbol: str) -> tuple[int, float]:
+        endpoint = "/fapi/v1/premiumIndex"
+        params = {"symbol": self._map_symbol(symbol)}
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+        )
+        record = raw
+        if isinstance(raw, list):
+            record = raw[0] if raw else None
+        if not record or "indexPrice" not in record:
+            raise ValueError(f"Unable to fetch Binance index price for {symbol}")
+        ts = record.get("time")
+        timestamp_ms = int(ts) if ts is not None else int(time.time() * 1000)
+        return timestamp_ms, float(record["indexPrice"])
 
     def _map_symbol(self, internal_symbol: str) -> str:
         # e.g. "BTCUSDT-PERP" -> "BTCUSDT"

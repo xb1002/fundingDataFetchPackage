@@ -178,6 +178,32 @@ class GateAdapter(ExchangeAdapter):
 
         funding_records.sort(key=lambda x: x[0])
         return funding_records
+
+    def fetch_latest_index_price(self, symbol: str) -> tuple[int, float]:
+        endpoint = "/futures/usdt/tickers"
+        contract = self._map_contract_symbol(symbol)
+        params: Dict[str, Any] = {"contract": contract}
+        raw = self.make_request(
+            url=f"{self.base_url}{endpoint}",
+            params=params,
+        )
+        records = raw if isinstance(raw, list) else raw.get("tickers") or raw.get("result") or []
+        target = None
+        for entry in records or []:
+            if entry.get("contract") == contract:
+                target = entry
+                break
+        if not target or "index_price" not in target:
+            raise ValueError(f"Gate.io response missing index_price for {symbol}")
+        ts = target.get("time") or target.get("t") or target.get("timestamp")
+        if ts is not None:
+            ts_val = int(ts)
+            if ts_val < 10**12:
+                ts_val *= 1000
+            timestamp_ms = ts_val
+        else:
+            timestamp_ms = int(time.time() * 1000)
+        return timestamp_ms, float(target["index_price"])
         
 
     def _map_timeframe(self, tf: str) -> Tuple[str, int]:

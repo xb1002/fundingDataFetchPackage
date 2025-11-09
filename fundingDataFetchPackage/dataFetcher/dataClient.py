@@ -126,6 +126,24 @@ class DataClient:
         adapter = self._get_adapter(exchange)
         return adapter.fetch_funding_history(params)
 
+    def fetch_latest_index_price(
+        self,
+        exchange: str,
+        symbol: str,
+    ) -> tuple[int, float]:
+        """
+        获取最新的指数价格及其时间戳
+
+        Args:
+            exchange: 交易所名称
+            symbol: 统一交易对符号（例如 BTC_USDT）
+
+        Returns:
+            (timestamp_ms, price): 指数价及对应毫秒时间戳
+        """
+        adapter = self._get_adapter(exchange)
+        return adapter.fetch_latest_index_price(symbol)
+
 
 # 创建全局实例供便捷使用
 data_client = DataClient()

@@ -1,6 +1,6 @@
 # core/base_adapter.py
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from .dto import OHLCVRequestParams, FundingRequestParams, CandleType, FundingRecordType
 import requests
 import time
@@ -78,4 +78,14 @@ class ExchangeAdapter(ABC):
 
     @abstractmethod
     def fetch_funding_history(self, req: FundingRequestParams) -> List[FundingRecordType]:
+        ...
+
+    @abstractmethod
+    def fetch_latest_index_price(self, symbol: str) -> Tuple[int, float]:
+        """
+        Return the most recent index price for the given perpetual symbol.
+
+        Returns:
+            Tuple[int, float]: (timestamp_ms, index_price)
+        """
         ...
