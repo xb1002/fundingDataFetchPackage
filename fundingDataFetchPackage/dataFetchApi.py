@@ -601,9 +601,22 @@ def download_funding_batches(
     progress_cb: Optional[Callable[[int, Optional[int], Optional[int], int], None]] = None,
     expected_total: Optional[int] = None,
 ) -> int:
+    def _infer_funding_step(rows: Sequence[Tuple[int, float]]) -> Optional[int]:
+        diffs = sorted(
+            {
+                rows[idx][0] - rows[idx - 1][0]
+                for idx in range(1, len(rows))
+                if rows[idx][0] > rows[idx - 1][0]
+            }
+        )
+        return diffs[0] if diffs else None
+
+    DEFAULT_FUNDING_STEP_MS = 60 * 60 * 1000
     total_downloaded = 0
     for range_start, range_end in ranges:
         cursor = range_start
+        stall_attempts = 0
+        inferred_step_ms: Optional[int] = None
         while cursor <= range_end:
             params = FundingRequestParams(
                 symbol=symbol,
@@ -643,9 +656,30 @@ def download_funding_batches(
             time.sleep(random.uniform(0.1, 0.2))
             progress_ts = max(row[0] for row in batch)
             if progress_ts <= cursor:
-                cursor += 1
-            else:
-                cursor = progress_ts + 1
+                if inferred_step_ms is None:
+                    inferred_step_ms = _infer_funding_step(batch) or DEFAULT_FUNDING_STEP_MS
+                prev_cursor = cursor
+                cursor = max(progress_ts + 1, cursor + inferred_step_ms)
+                stall_attempts += 1
+                logging.debug(
+                    "[%s][funding_rate] cursor stalled at %s; fast-forwarding by %s ms (attempt %s)",
+                    exchange,
+                    prev_cursor,
+                    inferred_step_ms,
+                    stall_attempts,
+                )
+                if stall_attempts >= 3:
+                    logging.warning(
+                        "[%s][funding_rate] no new funding data for %s after %s retries; stopping at %s",
+                        exchange,
+                        symbol,
+                        stall_attempts,
+                        cursor,
+                    )
+                    break
+                continue
+            stall_attempts = 0
+            cursor = progress_ts + 1
     return total_downloaded
 
 
