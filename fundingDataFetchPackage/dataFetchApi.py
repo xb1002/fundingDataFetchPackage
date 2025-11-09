@@ -1138,6 +1138,20 @@ class DataFetchApi:
             timeframe=timeframe,
         )
 
+    def fetch_latest_index_price(
+        self,
+        exchange: str,
+        symbol: str,
+    ) -> Tuple[int, float]:
+        """
+        Fetch the latest index price snapshot for a symbol.
+
+        Returns:
+            A tuple of (timestamp_ms, price).
+        """
+        timestamp_ms, price = data_client.fetch_latest_index_price(exchange, symbol)
+        return timestamp_ms, price
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
