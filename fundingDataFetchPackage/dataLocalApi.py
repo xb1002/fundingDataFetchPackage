@@ -27,6 +27,13 @@ TIMEFRAME_TO_MS = {
     "1w": 604_800_000,
     "1M": 2_592_000_000,
 }
+_MIN_RANGE_START = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_MAX_RANGE_END = datetime(2100, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+MIN_VALID_SECONDS = int(_MIN_RANGE_START.timestamp())
+MAX_VALID_SECONDS = int(_MAX_RANGE_END.timestamp())
+MIN_VALID_MILLIS = MIN_VALID_SECONDS * 1000
+MAX_VALID_MILLIS = MAX_VALID_SECONDS * 1000
+_VALID_RANGE_MSG = "between 2000-01-01 00:00:00 and 2100-12-31 23:59:59 UTC"
 
 
 class DataLocalApi:
@@ -50,8 +57,8 @@ class DataLocalApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str,
     ) -> pd.DataFrame:
         return self._fetch_ohlcv("price_ohlcv", exchange, symbol, timeframe, start_time, end_time)
@@ -60,8 +67,8 @@ class DataLocalApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str,
     ) -> pd.DataFrame:
         return self._fetch_ohlcv("index_ohlcv", exchange, symbol, timeframe, start_time, end_time)
@@ -70,8 +77,8 @@ class DataLocalApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str,
     ) -> pd.DataFrame:
         return self._fetch_ohlcv("premium_index_ohlcv", exchange, symbol, timeframe, start_time, end_time)
@@ -80,8 +87,8 @@ class DataLocalApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str = "8h",
     ) -> pd.DataFrame:
         # timeframe kept for interface parity – not used because funding files are fixed interval.
@@ -146,19 +153,48 @@ class DataLocalApi:
     # -------------------------------------------------------------------------
     # File system helpers
     # -------------------------------------------------------------------------
-    def _parse_time_range(self, start_time: str, end_time: str) -> Tuple[int, int]:
+    def _parse_time_range(self, start_time: Union[str, int], end_time: Union[str, int]) -> Tuple[int, int]:
         start_ms = self._parse_timestamp(start_time)
         end_ms = self._parse_timestamp(end_time)
         if start_ms > end_ms:
             raise ValueError("start_time must be earlier than or equal to end_time.")
         return start_ms, end_ms
 
-    def _parse_timestamp(self, ts: str) -> int:
-        try:
-            dt = datetime.strptime(ts, "%Y-%m-%d_%H:%M:%S")
-        except ValueError as exc:
-            raise ValueError(f"Invalid datetime format '{ts}'. Expected YYYY-MM-DD_HH:MM:SS") from exc
-        return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    def _parse_timestamp(self, ts: Union[str, int]) -> int:
+        if isinstance(ts, bool):
+            raise TypeError("Boolean values are not valid timestamps.")
+        if isinstance(ts, int):
+            return self._seconds_to_millis(ts)
+        if isinstance(ts, str):
+            ts_str = ts.strip()
+            if not ts_str:
+                raise ValueError("Timestamp string cannot be empty.")
+            try:
+                dt = datetime.strptime(ts_str, "%Y-%m-%d_%H:%M:%S")
+            except ValueError as exc:
+                raise ValueError(f"Invalid datetime format '{ts}'. Expected YYYY-MM-DD_HH:MM:SS") from exc
+            timestamp_ms = int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            self._ensure_millis_range(timestamp_ms)
+            return timestamp_ms
+        raise TypeError("Timestamp must be a YYYY-MM-DD_HH:MM:SS string or seconds-based integer.")
+
+    def _seconds_to_millis(self, timestamp_seconds: int) -> int:
+        if timestamp_seconds < 0:
+            raise ValueError("Timestamps must be non-negative seconds since epoch.")
+        self._ensure_seconds_range(timestamp_seconds)
+        return timestamp_seconds * 1000
+
+    def _ensure_seconds_range(self, timestamp_seconds: int) -> None:
+        if timestamp_seconds < MIN_VALID_SECONDS or timestamp_seconds > MAX_VALID_SECONDS:
+            raise ValueError(
+                f"Timestamp {timestamp_seconds} is outside the supported range {_VALID_RANGE_MSG}."
+            )
+
+    def _ensure_millis_range(self, timestamp_ms: int) -> None:
+        if timestamp_ms < MIN_VALID_MILLIS or timestamp_ms > MAX_VALID_MILLIS:
+            raise ValueError(
+                f"Timestamp {timestamp_ms} is outside the supported range {_VALID_RANGE_MSG}."
+            )
 
     def _find_files(
         self,

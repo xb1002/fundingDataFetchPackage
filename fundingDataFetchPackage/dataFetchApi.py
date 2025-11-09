@@ -60,6 +60,13 @@ TIMEFRAME_TO_MS: Dict[str, int] = {
 }
 
 DEFAULT_FLUSH_THRESHOLD_BYTES = 10 * 1024 * 1024
+_MIN_RANGE_START = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_MAX_RANGE_END = datetime(2100, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+MIN_VALID_SECONDS = int(_MIN_RANGE_START.timestamp())
+MAX_VALID_SECONDS = int(_MAX_RANGE_END.timestamp())
+MIN_VALID_MILLIS = MIN_VALID_SECONDS * 1000
+MAX_VALID_MILLIS = MAX_VALID_SECONDS * 1000
+_VALID_RANGE_MSG = "between 2000-01-01 00:00:00 and 2100-12-31 23:59:59 UTC"
 
 
 @dataclass
@@ -227,10 +234,42 @@ def resolve_timezone(tz_name: Optional[str]) -> timezone:
         raise ValueError(f"Invalid timezone '{tz_name}': {exc}") from exc
 
 
-def to_utc_millis(dt_str: str, tzinfo: timezone) -> int:
-    dt = datetime.strptime(dt_str, "%Y-%m-%d_%H:%M:%S")
-    dt = dt.replace(tzinfo=tzinfo)
-    return int(dt.astimezone(timezone.utc).timestamp() * 1000)
+def _ensure_seconds_range(timestamp_seconds: int) -> None:
+    if timestamp_seconds < MIN_VALID_SECONDS or timestamp_seconds > MAX_VALID_SECONDS:
+        raise ValueError(
+            f"Timestamp {timestamp_seconds} is outside the supported range {_VALID_RANGE_MSG}."
+        )
+
+
+def _seconds_to_utc_millis(timestamp_seconds: int) -> int:
+    if timestamp_seconds < 0:
+        raise ValueError("Timestamps must be non-negative seconds since epoch.")
+    _ensure_seconds_range(timestamp_seconds)
+    return timestamp_seconds * 1000
+
+
+def _ensure_millis_range(timestamp_ms: int) -> None:
+    if timestamp_ms < MIN_VALID_MILLIS or timestamp_ms > MAX_VALID_MILLIS:
+        raise ValueError(
+            f"Timestamp {timestamp_ms} is outside the supported range {_VALID_RANGE_MSG}."
+        )
+
+
+def to_utc_millis(dt_value: Union[str, int], tzinfo: timezone) -> int:
+    if isinstance(dt_value, bool):
+        raise TypeError("Boolean values are not valid timestamps.")
+    if isinstance(dt_value, int):
+        return _seconds_to_utc_millis(dt_value)
+    if isinstance(dt_value, str):
+        dt_str = dt_value.strip()
+        if not dt_str:
+            raise ValueError("Timestamp string cannot be empty.")
+        dt = datetime.strptime(dt_str, "%Y-%m-%d_%H:%M:%S")
+        dt = dt.replace(tzinfo=tzinfo)
+        timestamp_ms = int(dt.astimezone(timezone.utc).timestamp() * 1000)
+        _ensure_millis_range(timestamp_ms)
+        return timestamp_ms
+    raise TypeError("Timestamp must be a YYYY-MM-DD_HH:MM:SS string or seconds-based integer.")
 
 
 def parse_exchanges(arg_value: Optional[str]) -> List[str]:
@@ -927,8 +966,8 @@ def process_exchange(
 
 def fetch_symbol_data(
     symbol: str,
-    start_time: str,
-    end_time: str,
+    start_time: Union[str, int],
+    end_time: Union[str, int],
     *,
     timezone: Optional[str] = None,
     exchanges: Optional[str] = None,
@@ -1031,8 +1070,8 @@ class DataFetchApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str,
     ) -> None:
         """Fetch OHLCV price data from remote server."""
@@ -1049,8 +1088,8 @@ class DataFetchApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str,
     ) -> None:
         """Fetch OHLCV index data from remote server."""
@@ -1067,8 +1106,8 @@ class DataFetchApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str,
     ) -> None:
         """Fetch OHLCV premium index data from remote server."""
@@ -1085,8 +1124,8 @@ class DataFetchApi:
         self,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: str = "8h",
     ) -> None:
         """Fetch funding rate data from remote server."""
@@ -1108,8 +1147,8 @@ class DataFetchApi:
         data_type: str,
         exchange: str,
         symbol: str,
-        start_time: str,
-        end_time: str,
+        start_time: Union[str, int],
+        end_time: Union[str, int],
         timeframe: Optional[str],
     ) -> None:
         config = DATA_TYPE_CONFIG.get(data_type)
