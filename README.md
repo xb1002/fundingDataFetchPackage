@@ -72,6 +72,18 @@ df = local_api.price_ohlcv(
 print(df.head())
 ```
 
+### Control package logging
+```python
+import logging
+from fundingDataFetchPackage import configure_logging
+
+# Silence download progress messages emitted by the package
+configure_logging(enable=False)
+
+# Re-enable later and optionally raise the verbosity
+configure_logging(enable=True, level=logging.INFO)
+```
+
 ## Package layout
 ```
 fundingDataFetchPackage/
