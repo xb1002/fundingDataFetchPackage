@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Optional
 
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent).replace("\\", "/").lower()
+_PACKAGE_LOGGER_NAME = __name__.split(".", 1)[0]
 _LOG_FILTER: Optional["_PackageLogFilter"] = None
+_PACKAGE_LEVEL_BEFORE_MUTE: Optional[int] = None
+_LOGS_MUTED = False
 
 
 class _PackageLogFilter(logging.Filter):
@@ -30,8 +33,9 @@ def configure_logging(enable: bool = True, level: Optional[int] = None) -> None:
         level: Optional logging level to apply to the root logger when enabling.
     """
 
-    global _LOG_FILTER
+    global _LOG_FILTER, _PACKAGE_LEVEL_BEFORE_MUTE, _LOGS_MUTED
 
+    package_logger = logging.getLogger(_PACKAGE_LOGGER_NAME)
     root_logger = logging.getLogger()
     if enable:
         if level is not None:
@@ -42,8 +46,23 @@ def configure_logging(enable: bool = True, level: Optional[int] = None) -> None:
             except ValueError:  # pragma: no cover - defensive
                 pass
             _LOG_FILTER = None
+        if _LOGS_MUTED:
+            restore_level = (
+                _PACKAGE_LEVEL_BEFORE_MUTE
+                if _PACKAGE_LEVEL_BEFORE_MUTE is not None
+                else logging.NOTSET
+            )
+            package_logger.setLevel(restore_level)
+            _PACKAGE_LEVEL_BEFORE_MUTE = None
+            _LOGS_MUTED = False
         return
 
     if _LOG_FILTER is None:
         _LOG_FILTER = _PackageLogFilter()
         root_logger.addFilter(_LOG_FILTER)
+
+    if not _LOGS_MUTED:
+        current_level = package_logger.level
+        _PACKAGE_LEVEL_BEFORE_MUTE = current_level if current_level != logging.NOTSET else None
+        package_logger.setLevel(logging.CRITICAL + 1)
+        _LOGS_MUTED = True
