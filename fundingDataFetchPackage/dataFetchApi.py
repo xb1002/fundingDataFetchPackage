@@ -540,8 +540,11 @@ def download_ohlcv_batches(
 ) -> int:
     fetcher = getattr(data_client, method_name)
     total_downloaded = 0
+    MAX_STALL_ATTEMPTS = 3
     for range_start, range_end in ranges:
         cursor = range_start
+        last_written_ts: Optional[int] = None
+        stall_attempts = 0
         while cursor <= range_end:
             remaining = ((range_end - cursor) // timeframe_ms) + 1
             limit = min(max_limit, remaining)
@@ -571,20 +574,51 @@ def download_ohlcv_batches(
                     cursor,
                 )
                 break
-            filtered = [row for row in batch if range_start <= row[0] <= range_end]
+            filtered = [
+                row
+                for row in batch
+                if range_start <= row[0] <= range_end
+                and (last_written_ts is None or row[0] > last_written_ts)
+            ]
             if filtered:
+                last_written_ts = filtered[-1][0]
+                stall_attempts = 0
                 total_downloaded += len(filtered)
                 if chunk_cb:
                     chunk_cb(filtered)
+            else:
+                stall_attempts += 1
+                logging.debug(
+                    "[%s][%s] no new OHLCV rows for %s at cursor %s (attempt %s)",
+                    exchange,
+                    method_name,
+                    symbol,
+                    cursor,
+                    stall_attempts,
+                )
+                if stall_attempts >= MAX_STALL_ATTEMPTS:
+                    logging.warning(
+                        "[%s][%s] stopping range %s-%s after %s empty batches (last_ts=%s)",
+                        exchange,
+                        method_name,
+                        range_start,
+                        range_end,
+                        stall_attempts,
+                        last_written_ts,
+                    )
+                    break
             if progress_cb:
-                latest_ts: Optional[int] = None
+                latest_ts: Optional[int] = last_written_ts
                 if filtered:
                     latest_ts = filtered[-1][0]
-                elif batch:
-                    latest_ts = batch[-1][0]
+                elif latest_ts is None and batch:
+                    latest_ts = max(row[0] for row in batch)
                 progress_cb(total_downloaded, expected_total, latest_ts, len(filtered))
             time.sleep(random.uniform(0.1, 0.2))
-            progress_ts = max(row[0] for row in batch)
+            if filtered:
+                progress_ts = filtered[-1][0]
+            else:
+                progress_ts = max(row[0] for row in batch)
             if progress_ts <= cursor:
                 cursor += timeframe_ms * max(1, len(batch))
             else:
