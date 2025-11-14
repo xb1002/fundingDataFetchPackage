@@ -36,23 +36,22 @@ BITGET_ENDPOINTS = {
     "price_ohlcv": "/api/v3/market/history-candles",
     "index_ohlcv": "/api/v3/market/history-candles",
     "premium_index_ohlcv": "/api/v3/market/history-candles",
-    # 资费历史：改回 v2 contract 接口
-    "funding_history": "/api/v2/mix/market/history-fund-rate",
+    "funding_history": "/api/v3/market/history-fund-rate",
 }
 
+# v3 per-request max limits (see docs)
 BITGET_REQ_MAX_LIMIT = {
     "price_ohlcv": 100,
     "index_ohlcv": 100,
     "premium_index_ohlcv": 100,
-    # v2 文档里 pageSize 最大 100:contentReference[oaicite:2]{index=2}
     "funding_history": 100,
 }
 
+# adapter-level default page sizes (within API max)
 BITGET_DEFAULT_LIMIT = {
     "price_ohlcv": 100,
     "index_ohlcv": 100,
     "premium_index_ohlcv": 100,
-    # 随便给个默认，20 就行
     "funding_history": 100,
 }
 
@@ -118,21 +117,23 @@ class BitgetAdapter(ExchangeAdapter):
         return self._fetch_candle_series("premium_index_ohlcv", req)
 
     def fetch_funding_history(self, req: FundingRequestParams) -> List[FundingRecordType]:
+        """
+        v3 Get Funding Rate History:
+        GET /api/v3/market/history-fund-rate
+        """
         endpoint = self.endpoint_dict["funding_history"]
         desired_limit = self._resolve_limit(req.limit, "funding_history")
-
+        # v3 uses `limit` (max 200) + `cursor`
         if req.start_time is not None:
             request_page_size = self.req_max_limit["funding_history"]
         else:
             request_page_size = max(desired_limit, BITGET_DEFAULT_LIMIT["funding_history"])
             request_page_size = min(request_page_size, self.req_max_limit["funding_history"])
 
-        # v2: symbol + productType + pageSize
         params: Dict[str, Any] = {
+            "category": self.category,
             "symbol": self._map_symbol(req.symbol),
-            # 对应文档里的 productType（示例是 usdt-futures）:contentReference[oaicite:4]{index=4}
-            "productType": "usdt-futures",
-            "pageSize": request_page_size,
+            "limit": request_page_size,
         }
 
         if req.start_time is not None:
@@ -151,7 +152,6 @@ class BitgetAdapter(ExchangeAdapter):
         )
         records = self._parse_funding_history(raw)
         return records[:desired_limit]
-
 
     def _fetch_candle_series(self, key: str, req: OHLCVRequestParams) -> List[CandleType]:
         """
@@ -192,14 +192,17 @@ class BitgetAdapter(ExchangeAdapter):
         desired_limit: int,
         request_page_size: int,
     ) -> List[FundingRecordType]:
-        page_no = 1
+        """
+        使用 v3 cursor 分页，从 fundingRateTimestamp >= start_time 开始往后拉。
+        这里假设 cursor=1 为第一页，按时间排序，具体顺序用 timestamp 再统一排序。
+        """
+        cursor = 1
         collected: List[FundingRecordType] = []
         max_pages = 100
 
         while True:
             params = dict(base_params)
-            params["pageNo"] = page_no
-
+            params["cursor"] = cursor
             raw = self.make_request(
                 url=f"{self.base_url}{endpoint}",
                 params=params,
@@ -208,23 +211,22 @@ class BitgetAdapter(ExchangeAdapter):
             if not page_records:
                 break
 
-            filtered = [rec for rec in page_records if rec[0] >= start_time]
-            collected.extend(filtered)
-            collected.sort(key=lambda x: x[0])
+            for rec in page_records:
+                if rec[0] >= start_time:
+                    collected.append(rec)
 
-            if collected and collected[0][0] <= start_time:
+            if len(collected) >= desired_limit:
                 break
             if len(page_records) < request_page_size:
-                break
-            if len(collected) >= desired_limit and collected[0][0] <= start_time:
-                break
-
-            page_no += 1
-            if page_no > max_pages:
+                # 最后一页
                 break
 
-        return [rec for rec in collected if rec[0] >= start_time]
+            cursor += 1
+            if cursor > max_pages:
+                break
 
+        collected.sort(key=lambda x: x[0])
+        return collected
 
     def _parse_candles(self, raw: Any) -> List[CandleType]:
         """
@@ -280,10 +282,10 @@ class BitgetAdapter(ExchangeAdapter):
             raise RuntimeError(f"Bitget API error {raw.get('code')}: {msg}")
 
         data = raw.get("data") or {}
-        result_list = data
+        result_list = data.get("resultList") or []
         records: List[FundingRecordType] = []
         for item in result_list:
-            ts_str = item.get("fundingTime")
+            ts_str = item.get("fundingRateTimestamp")
             rate_str = item.get("fundingRate")
             if ts_str is None or rate_str is None:
                 continue
