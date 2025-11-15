@@ -36,7 +36,8 @@ BITGET_ENDPOINTS = {
     "price_ohlcv": "/api/v3/market/history-candles",
     "index_ohlcv": "/api/v3/market/history-candles",
     "premium_index_ohlcv": "/api/v3/market/history-candles",
-    "funding_history": "/api/v3/market/history-fund-rate",
+    # Funding history sticks to the mix v1 endpoint because v3 lacks pagination.
+    "funding_history": "/api/mix/v1/market/history-fundRate",
 }
 
 # v3 per-request max limits (see docs)
@@ -71,6 +72,7 @@ class BitgetAdapter(ExchangeAdapter):
         self.req_max_limit = BITGET_REQ_MAX_LIMIT
         # This adapter is currently implemented for USDT perpetual futures
         self.category = "USDT-FUTURES"
+        self.contract_code = "UMCBL"
 
     def fetch_markets(self) -> List[str]:
         """
@@ -123,35 +125,46 @@ class BitgetAdapter(ExchangeAdapter):
         """
         endpoint = self.endpoint_dict["funding_history"]
         desired_limit = self._resolve_limit(req.limit, "funding_history")
-        # v3 uses `limit` (max 200) + `cursor`
-        if req.start_time is not None:
-            request_page_size = self.req_max_limit["funding_history"]
-        else:
-            request_page_size = max(desired_limit, BITGET_DEFAULT_LIMIT["funding_history"])
-            request_page_size = min(request_page_size, self.req_max_limit["funding_history"])
-
+        page_size = self.req_max_limit["funding_history"]
         params: Dict[str, Any] = {
-            "category": self.category,
-            "symbol": self._map_symbol(req.symbol),
-            "limit": request_page_size,
+            "symbol": self._map_funding_symbol(req.symbol),
+            "pageSize": page_size,
         }
 
-        if req.start_time is not None:
-            records = self._fetch_funding_since(
-                endpoint,
-                params,
-                int(req.start_time),
-                desired_limit,
-                request_page_size,
-            )
-            return records[:desired_limit]
+        collected: List[FundingRecordType] = []
+        page_no = 1
+        max_pages = 1000
+        start_time = int(req.start_time) if req.start_time is not None else None
 
-        raw = self.make_request(
-            url=f"{self.base_url}{endpoint}",
-            params=params,
-        )
-        records = self._parse_funding_history(raw)
-        return records[:desired_limit]
+        while page_no <= max_pages:
+            params["pageNo"] = page_no
+            raw = self.make_request(
+                url=f"{self.base_url}{endpoint}",
+                params=params,
+            )
+            records = self._parse_funding_history(raw)
+            if not records:
+                break
+
+            page_has_older = False
+            for ts, rate in records:
+                if start_time is not None and ts < start_time:
+                    page_has_older = True
+                    continue
+                collected.append((ts, rate))
+                if start_time is None and len(collected) >= desired_limit:
+                    break
+
+            if len(records) < page_size:
+                break
+            if start_time is None and len(collected) >= desired_limit:
+                break
+            if start_time is not None and page_has_older:
+                break
+            page_no += 1
+
+        collected.sort(key=lambda x: x[0])
+        return collected[:desired_limit]
 
     def _fetch_candle_series(self, key: str, req: OHLCVRequestParams) -> List[CandleType]:
         """
@@ -183,50 +196,6 @@ class BitgetAdapter(ExchangeAdapter):
             timeout=10.0,
         )
         return self._parse_candles(raw)
-
-    def _fetch_funding_since(
-        self,
-        endpoint: str,
-        base_params: Dict[str, Any],
-        start_time: int,
-        desired_limit: int,
-        request_page_size: int,
-    ) -> List[FundingRecordType]:
-        """
-        使用 v3 cursor 分页，从 fundingRateTimestamp >= start_time 开始往后拉。
-        这里假设 cursor=1 为第一页，按时间排序，具体顺序用 timestamp 再统一排序。
-        """
-        cursor = 1
-        collected: List[FundingRecordType] = []
-        max_pages = 100
-
-        while True:
-            params = dict(base_params)
-            params["cursor"] = cursor
-            raw = self.make_request(
-                url=f"{self.base_url}{endpoint}",
-                params=params,
-            )
-            page_records = self._parse_funding_history(raw)
-            if not page_records:
-                break
-
-            for rec in page_records:
-                if rec[0] >= start_time:
-                    collected.append(rec)
-
-            if len(collected) >= desired_limit:
-                break
-            if len(page_records) < request_page_size:
-                # 最后一页
-                break
-
-            cursor += 1
-            if cursor > max_pages:
-                break
-
-        collected.sort(key=lambda x: x[0])
-        return collected
 
     def _parse_candles(self, raw: Any) -> List[CandleType]:
         """
@@ -281,11 +250,16 @@ class BitgetAdapter(ExchangeAdapter):
             msg = raw.get("msg", "Unknown Bitget API error")
             raise RuntimeError(f"Bitget API error {raw.get('code')}: {msg}")
 
-        data = raw.get("data") or {}
-        result_list = data.get("resultList") or []
+        data = raw.get("data")
+        if isinstance(data, dict):
+            result_list = data.get("resultList") or []
+        elif isinstance(data, list):
+            result_list = data
+        else:
+            result_list = []
         records: List[FundingRecordType] = []
         for item in result_list:
-            ts_str = item.get("fundingRateTimestamp")
+            ts_str = item.get("fundingRateTimestamp") or item.get("settleTime")
             rate_str = item.get("fundingRate")
             if ts_str is None or rate_str is None:
                 continue
@@ -369,6 +343,12 @@ class BitgetAdapter(ExchangeAdapter):
         内部使用 BTC_USDT，v3 使用 BTCUSDT，合约类型通过 category 区分。
         """
         return internal_symbol.replace("_", "")
+
+    def _map_funding_symbol(self, internal_symbol: str) -> str:
+        """
+        Funding history endpoint expects symbols like BTCUSDT_UMCBL.
+        """
+        return f"{self._map_symbol(internal_symbol)}_{self.contract_code}"
 
 
 if __name__ == "__main__":
