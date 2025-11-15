@@ -63,6 +63,14 @@ CANDLE_TYPE_MAP: Dict[str, str] = {
     "premium_index_ohlcv": "premium",
 }
 
+BITGET_FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000
+
+
+class BitgetFundingUnavailable(RuntimeError):
+    def __init__(self, code: Optional[str], message: str):
+        super().__init__(message)
+        self.code = code or ""
+
 
 class BitgetAdapter(ExchangeAdapter):
     def __init__(self):
@@ -120,11 +128,23 @@ class BitgetAdapter(ExchangeAdapter):
 
     def fetch_funding_history(self, req: FundingRequestParams) -> List[FundingRecordType]:
         """
-        v3 Get Funding Rate History:
-        GET /api/v3/market/history-fund-rate
+        Prefer the mix (v1) endpoint for full pagination. Fall back to the v3 endpoint
+        for symbols that are not available on mix yet.
         """
-        endpoint = self.endpoint_dict["funding_history"]
         desired_limit = self._resolve_limit(req.limit, "funding_history")
+        try:
+            return self._fetch_funding_history_mix(req, desired_limit)
+        except BitgetFundingUnavailable as exc:
+            if exc.code and exc.code not in {"40034"}:
+                raise
+        return self._fetch_funding_history_v3(req, desired_limit)
+
+    def _fetch_funding_history_mix(
+        self,
+        req: FundingRequestParams,
+        desired_limit: int,
+    ) -> List[FundingRecordType]:
+        endpoint = self.endpoint_dict["funding_history"]
         page_size = self.req_max_limit["funding_history"]
         params: Dict[str, Any] = {
             "symbol": self._map_funding_symbol(req.symbol),
@@ -138,10 +158,18 @@ class BitgetAdapter(ExchangeAdapter):
 
         while page_no <= max_pages:
             params["pageNo"] = page_no
-            raw = self.make_request(
-                url=f"{self.base_url}{endpoint}",
-                params=params,
-            )
+            try:
+                raw = self.make_request(
+                    url=f"{self.base_url}{endpoint}",
+                    params=params,
+                    max_retries=0,
+                )
+            except Exception as exc:
+                raise BitgetFundingUnavailable(None, str(exc)) from exc
+            if not isinstance(raw, dict):
+                raise ValueError("Unexpected response format from Bitget funding API")
+            if raw.get("code") != "00000":
+                raise BitgetFundingUnavailable(raw.get("code"), raw.get("msg", ""))
             records = self._parse_funding_history(raw)
             if not records:
                 break
@@ -164,6 +192,60 @@ class BitgetAdapter(ExchangeAdapter):
             page_no += 1
 
         collected.sort(key=lambda x: x[0])
+        return collected[:desired_limit]
+
+    def _fetch_funding_history_v3(
+        self,
+        req: FundingRequestParams,
+        desired_limit: int,
+    ) -> List[FundingRecordType]:
+        endpoint = "/api/v3/market/history-fund-rate"
+        page_size = self.req_max_limit["funding_history"]
+        params: Dict[str, Any] = {
+            "category": self.category,
+            "symbol": self._map_symbol(req.symbol),
+            "limit": page_size,
+        }
+        start_time = int(req.start_time) if req.start_time is not None else None
+        collected: List[FundingRecordType] = []
+        cursor = 1
+        max_pages = 2000
+
+        while cursor <= max_pages:
+            params["cursor"] = cursor
+            raw = self.make_request(
+                url=f"{self.base_url}{endpoint}",
+                params=params,
+            )
+            if not isinstance(raw, dict):
+                raise ValueError("Unexpected response format from Bitget funding API")
+            if raw.get("code") != "00000":
+                msg = raw.get("msg", "Unknown Bitget API error")
+                raise RuntimeError(f"Bitget API error {raw.get('code')}: {msg}")
+            page_records = self._parse_funding_history(raw)
+            if not page_records:
+                break
+
+            for ts, rate in page_records:
+                if start_time is not None and ts < start_time:
+                    continue
+                collected.append((ts, rate))
+                if start_time is None and len(collected) >= desired_limit:
+                    break
+
+            if len(page_records) < page_size:
+                break
+            if start_time is not None:
+                oldest_ts = page_records[-1][0]
+                if oldest_ts < start_time:
+                    break
+            if start_time is None and len(collected) >= desired_limit:
+                break
+            cursor += 1
+
+        collected.sort(key=lambda x: x[0])
+        if start_time is not None:
+            collected = [row for row in collected if row[0] >= start_time]
         return collected[:desired_limit]
 
     def _fetch_candle_series(self, key: str, req: OHLCVRequestParams) -> List[CandleType]:
