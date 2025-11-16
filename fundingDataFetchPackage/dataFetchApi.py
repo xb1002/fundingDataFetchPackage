@@ -60,6 +60,15 @@ TIMEFRAME_TO_MS: Dict[str, int] = {
 }
 
 DEFAULT_FLUSH_THRESHOLD_BYTES = 10 * 1024 * 1024
+DEFAULT_RATE_LIMIT_SLEEP_RANGE = (0.1, 0.2)
+EXCHANGE_RATE_LIMITS: Dict[str, Dict[str, float]] = {
+    # Spot and futures REST limits sourced from official exchange documentation.
+    "binance": {"requests_per_minute": 1_200, "jitter": 0.2},
+    "bybit": {"requests_per_second": 50, "jitter": 0.25},
+    "okx": {"requests_per_2_seconds": 20, "jitter": 0.25},
+    "gate": {"requests_per_second": 10, "jitter": 0.25},
+    "bitget": {"requests_per_second": 10, "jitter": 0.25},
+}
 _MIN_RANGE_START = datetime(2000, 1, 1, tzinfo=timezone.utc)
 _MAX_RANGE_END = datetime(2100, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 MIN_VALID_SECONDS = int(_MIN_RANGE_START.timestamp())
@@ -67,6 +76,42 @@ MAX_VALID_SECONDS = int(_MAX_RANGE_END.timestamp())
 MIN_VALID_MILLIS = MIN_VALID_SECONDS * 1000
 MAX_VALID_MILLIS = MAX_VALID_SECONDS * 1000
 _VALID_RANGE_MSG = "between 2000-01-01 00:00:00 and 2100-12-31 23:59:59 UTC"
+
+
+def _compute_base_interval(config: Dict[str, float]) -> float:
+    if "requests_per_minute" in config:
+        rpm = config["requests_per_minute"]
+        if rpm > 0:
+            return 60.0 / rpm
+    if "requests_per_second" in config:
+        rps = config["requests_per_second"]
+        if rps > 0:
+            return 1.0 / rps
+    if "requests_per_2_seconds" in config:
+        rp2s = config["requests_per_2_seconds"]
+        if rp2s > 0:
+            return 2.0 / rp2s
+    return sum(DEFAULT_RATE_LIMIT_SLEEP_RANGE) / 2
+
+
+def _resolve_sleep_range(exchange: str) -> Tuple[float, float]:
+    config = EXCHANGE_RATE_LIMITS.get(exchange.lower())
+    if not config:
+        return DEFAULT_RATE_LIMIT_SLEEP_RANGE
+    base_interval = _compute_base_interval(config)
+    jitter = config.get("jitter", 0.2)
+    jitter = max(jitter, 0.0)
+    min_interval = base_interval * (1 - jitter)
+    max_interval = base_interval * (1 + jitter)
+    min_interval = max(min_interval, 0.001)
+    max_interval = max(max_interval, min_interval)
+    return (min_interval, max_interval)
+
+
+def _respect_rate_limit(exchange: str) -> None:
+    min_interval, max_interval = _resolve_sleep_range(exchange)
+    delay = min_interval if min_interval >= max_interval else random.uniform(min_interval, max_interval)
+    time.sleep(delay)
 
 
 @dataclass
@@ -614,7 +659,7 @@ def download_ohlcv_batches(
                 elif latest_ts is None and batch:
                     latest_ts = max(row[0] for row in batch)
                 progress_cb(total_downloaded, expected_total, latest_ts, len(filtered))
-            time.sleep(random.uniform(0.1, 0.2))
+            _respect_rate_limit(exchange)
             if filtered:
                 progress_ts = filtered[-1][0]
             else:
@@ -687,7 +732,7 @@ def download_funding_batches(
                 elif batch:
                     latest_ts = batch[-1][0]
                 progress_cb(total_downloaded, expected_total, latest_ts, len(filtered))
-            time.sleep(random.uniform(0.1, 0.2))
+            _respect_rate_limit(exchange)
             progress_ts = max(row[0] for row in batch)
             if progress_ts <= cursor:
                 if inferred_step_ms is None:
